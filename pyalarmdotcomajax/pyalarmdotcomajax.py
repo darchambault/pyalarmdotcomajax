@@ -83,6 +83,8 @@ class Alarmdotcom:
         self._websession = websession
         self.state = ""  # empty string instead of None
         self.sensor_status = None
+        self.sensors = []
+        self.garage_doors = []
         self._ajax_headers = {
             "Accept": "application/vnd.api+json",
             "ajaxrequestuniquekey": None,
@@ -223,6 +225,8 @@ class Alarmdotcom:
             self.sensor_status = (
                 "System needs to be cleared" if self.sensor_status else "System OK"
             )
+            self.sensors = []
+            self.garage_doors = []
             self.state = json["data"]["attributes"]["state"]
             self.state = self.STATEMAP[self.state]
             _LOGGER.debug(
@@ -238,6 +242,8 @@ class Alarmdotcom:
             # We may have timed out. Re-login again
             self.state = None
             self.sensor_status = None
+            self.sensors = []
+            self.garage_doors = []
             self._ajax_headers["ajaxrequestuniquekey"] = None
             await self.async_update()
         try:
@@ -247,12 +253,20 @@ class Alarmdotcom:
             ) as resp:
                 json = await (resp.json())
             for sensor in json["data"]:
-                self.sensor_status += (
-                    ", "
-                    + sensor["attributes"]["description"]
-                    + " is "
-                    + sensor["attributes"]["stateText"]
-                )
+                if sensor["attributes"]["hasState"]:
+                    self.sensors.append({
+                        "id": sensor["id"],
+                        "description": sensor["attributes"]["description"],
+                        "deviceType": sensor["attributes"]["deviceType"],
+                        "state": sensor["attributes"]["state"],
+                        "stateText": sensor["attributes"]["stateText"],
+                    })
+                    self.sensor_status += (
+                        ", "
+                        + sensor["attributes"]["description"]
+                        + " is "
+                        + sensor["attributes"]["stateText"]
+                    )
         except (asyncio.TimeoutError, aiohttp.ClientError):
             _LOGGER.error("Can not load sensor status from Alarm.com")
             return False
@@ -294,6 +308,11 @@ class Alarmdotcom:
                 ) as resp:
                     json = await (resp.json())
                 for sensor in json["data"]:
+                    self.garage_doors.append({
+                        "id": sensor["id"],
+                        "description": sensor["attributes"]["description"],
+                        "state": sensor["attributes"]["state"],
+                    })
                     garage_state = sensor["attributes"]["state"]
                     garage_state = self.GARAGE_DOOR_STATEMAP[garage_state]
                     self.sensor_status += (
