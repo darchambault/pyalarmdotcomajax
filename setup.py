@@ -23,7 +23,7 @@ setup(
     url="http://github.com/darchambault/pyalarmdotcomredux/",
     license=" ",
     author="Dominique Archambault",
-    install_requires=[],
+    install_requires=["bs4", "aiohttp>=3.8.0"],
     author_email="1649005+darchambault@users.noreply.github.com",
     description="Python Interface for Alarm.com",
     long_description=long_description,
