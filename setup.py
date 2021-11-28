@@ -1,7 +1,6 @@
 import io
 import os
 from setuptools import setup
-import pyalarmdotcomredux
 
 here = os.path.abspath(os.path.dirname(__file__))
 
@@ -20,7 +19,7 @@ long_description = read("README.md")
 
 setup(
     name="pyalarmdotcomredux",
-    version=pyalarmdotcomredux.__version__,
+    version="0.2.0",
     url="http://github.com/darchambault/pyalarmdotcomredux/",
     license=" ",
     author="Dominique Archambault",
