@@ -1,7 +1,7 @@
 import io
 import os
 from setuptools import setup
-import pyalarmdotcomajax
+import pyalarmdotcomredux
 
 here = os.path.abspath(os.path.dirname(__file__))
 
@@ -19,9 +19,9 @@ def read(*filenames, **kwargs):
 long_description = read("README.md")
 
 setup(
-    name="pyalarmdotcomajax",
-    version=pyalarmdotcomajax.__version__,
-    url="http://github.com/darchambault/pyalarmdotcomajax/",
+    name="pyalarmdotcomredux",
+    version=pyalarmdotcomredux.__version__,
+    url="http://github.com/darchambault/pyalarmdotcomredux/",
     license=" ",
     author="Dominique Archambault",
     install_requires=[],
@@ -29,7 +29,7 @@ setup(
     description="Python Interface for Alarm.com",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    packages=["pyalarmdotcomajax"],
+    packages=["pyalarmdotcomredux"],
     include_package_data=True,
     platforms="any",
     classifiers=[

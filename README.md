@@ -1,35 +1,28 @@
-Alarm.com Python Library
-===============================
+# Alarm.com Python Library
 
 version number: 0.2.0
 author: Dominique Archambault
 
-Overview
---------
+## Overview
 
 A simple library to interface with Alarm.com using AJAX.
 Forked from Justin Wong's pyalarmdotcomajax. Mainly built for use with Home-Assistant.
 
-Installation / Usage
---------------------
+## Installation / Usage
 
 To install use pip:
 
-    $ pip install pyalarmdotcomajax
-
+    $ pip install pyalarmdotcomredux
 
 Or clone the repo:
 
-    $ git clone https://github.com/uvjustin/pyalarmdotcomajax.git
+    $ git clone https://github.com/darchambault/pyalarmdotcomredux.git
     $ python setup.py install
-    
-Contributing
-------------
+
+## Contributing
 
 TBD
 
-Example
--------
+## Example
 
 TBD
-
