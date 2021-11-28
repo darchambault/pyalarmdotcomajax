@@ -1,6 +1,6 @@
 # Alarm.com Python Library
 
-version number: 0.2.0
+version number: 0.2.2
 author: Dominique Archambault
 
 ## Overview

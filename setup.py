@@ -19,7 +19,7 @@ long_description = read("README.md")
 
 setup(
     name="pyalarmdotcomredux",
-    version="0.2.0",
+    version="0.2.2",
     url="http://github.com/darchambault/pyalarmdotcomredux/",
     license=" ",
     author="Dominique Archambault",
