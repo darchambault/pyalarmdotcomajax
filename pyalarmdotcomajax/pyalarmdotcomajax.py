@@ -1,20 +1,16 @@
-"""pyalarmdotcomajax module."""
-import asyncio
+"""Client module for Alarm.com portal"""
 import logging
-import aiohttp
+from typing import Dict
+
 from bs4 import BeautifulSoup
+import asyncio
+import aiohttp
 
 _LOGGER = logging.getLogger(__name__)
 
 
-class Alarmdotcom:
-    """
-    Access to alarm.com partners and accounts.
-
-    This class is used to interface with the options available through
-    alarm.com. The basic functions of checking system status and arming
-    and disarming the system are possible.
-    """
+class AlarmdotcomClient:
+    """HTTP Client for Alarm.com user portal"""
 
     URL_BASE = "https://www.alarm.com/"
     LOGIN_URL = "https://www.alarm.com/login"
@@ -28,80 +24,215 @@ class Alarmdotcom:
     SYSTEMITEMS_URL = "https://www.alarm.com/web/api/systems/availableSystemItems"
     SYSTEM_URL_TEMPLATE = "{}web/api/systems/systems/{}"
     PARTITION_URL_TEMPLATE = "{}web/api/devices/partitions/{}"
+    PARTITION_COMMAND_URL_TEMPLATE = "{}web/api/devices/partitions/{}/{}"
     TROUBLECONDITIONS_URL_TEMPLATE = (
         "{}web/api/troubleConditions/troubleConditions?forceRefresh=false"
     )
     SENSOR_STATUS_URL_TEMPLATE = "{}web/api/devices/sensors"
-    THERMOSTAT_STATUS_URL_TEMPLATE = "{}web/api/devices/thermostats"
     GARAGE_DOOR_STATUS_URL_TEMPLATE = "{}web/api/devices/garageDoors"
-    STATEMAP = (
-        "",
-        "disarmed",
-        "armed stay",
-        "armed away",
-        "armed night",
-    )  # index is ADC's json status, value is integration's status
-    GARAGE_DOOR_STATEMAP = (
-        "Transitioning",  # 0
-        "Open",  # 1
-        "Closed",  # 2
-    )
-    COMMAND_LIST = {
-        "Disarm": {"command": "disarm"},
-        "Arm+Stay": {"command": "armStay"},
-        "Arm+Away": {"command": "armAway"},
+    GARAGE_DOOR_COMMAND_URL_TEMPLATE = "{}web/api/devices/garageDoors/{}/{}"
+    THERMOSTATS_STATUS_URL_TEMPLATE = "{}web/api/devices/thermostats"
+
+    ALARM_STATE_DISARMED = 1
+    ALARM_STATE_ARMED_STAY = 2
+    ALARM_STATE_ARMED_AWAY = 3
+    ALARM_STATE_ARMED_NIGHT = 4
+
+    GARAGE_DOOR_STATE_TRANSITIONING = 0
+    GARAGE_DOOR_STATE_OPEN = 1
+    GARAGE_DOOR_STATE_CLOSED = 2
+
+    ALARM_COMMAND_DISARM = "Disarm"
+    ALARM_COMMAND_ARM_STAY = "Arm+Stay"
+    ALARM_COMMAND_ARM_AWAY = "Arm+Away"
+    ALARM_COMMAND_LIST = {
+        ALARM_COMMAND_DISARM: {"command": "disarm"},
+        ALARM_COMMAND_ARM_STAY: {"command": "armStay"},
+        ALARM_COMMAND_ARM_AWAY: {"command": "armAway"},
     }
-    THERMOSTAT_ATTRIBUTES = (
-        "ambientTemp",
-        "coolSetpoint",
-        "fanMode",
-        "heatSetpoint",
-        "humidityLevel",
-        "state",
-    )
+
+    GARAGE_DOOR_COMMAND_OPEN = "Open"
+    GARAGE_DOOR_COMMAND_CLOSE = "Close"
+    GARAGE_DOOR_COMMAND_LIST = {
+        GARAGE_DOOR_COMMAND_OPEN: {"command": "open"},
+        GARAGE_DOOR_COMMAND_CLOSE: {"command": "close"},
+    }
+
+    DEVICETYPE_CONTACT = 1
+    DEVICETYPE_MOTION = 2
 
     def __init__(
         self,
         username,
         password,
         websession,
-        forcebypass,
-        noentrydelay,
-        silentarming,
-        twofactorcookie,
+        twofactorcookie=None,
     ):
-        """
-        Use aiohttp to make a request to alarm.com
-
-        :param username: Alarm.com username
-        :param password: Alarm.com password
-        :param websession: AIOHttp Websession
-        :param loop: Async loop.
-        """
         self._username = username
         self._password = password
         self._websession = websession
-        self.state = ""  # empty string instead of None
-        self.sensor_status = None
-        self.sensors = []
-        self.garage_doors = []
+
+        self._twofactor_cookie = (
+            {"twoFactorAuthenticationId": twofactorcookie} if twofactorcookie else {}
+        )
+
+        self._url_base = self.URL_BASE
         self._ajax_headers = {
             "Accept": "application/vnd.api+json",
             "ajaxrequestuniquekey": None,
         }
         self._systemid = None
         self._partitionid = None
-        self._forcebypass = forcebypass  # "stay","away","true","false"
-        self._noentrydelay = noentrydelay  # "stay","away","true","false"
-        self._silentarming = silentarming  # "stay","away","true","false"
-        self._thermostat_detected = False
-        self._garage_door_detected = False
-        self._url_base = self.URL_BASE
-        self._twofactor_cookie = (
-            {"twoFactorAuthenticationId": twofactorcookie} if twofactorcookie else {}
+
+    async def async_login(self):
+        """Login to Alarm.com."""
+        _LOGGER.debug("Attempting to log in to Alarm.com")
+        self._ajax_headers["ajaxrequestuniquekey"] = await self._async_get_ajax_key()
+        _LOGGER.debug(
+            "Successfully fetched ajax cookie: %s",
+            self._ajax_headers["ajaxrequestuniquekey"],
+        )
+        return await self._async_fetch_system_info()
+
+    async def async_get_alarm_data(self):
+        """Fetches alarm state data"""
+        try:
+            data = await self._async_request(
+                lambda: self.PARTITION_URL_TEMPLATE.format(
+                    self._url_base, self._partitionid
+                )
+            )
+            return {
+                "id": data["id"],
+                "description": data["attributes"]["description"],
+                "state": data["attributes"]["state"],
+            }
+        except (Exception) as err:
+            _LOGGER.error("Failed to get alarm data from Alarm.com")
+            raise err
+
+    async def async_get_sensors_data(self):
+        """Fetches sensors state data"""
+        data = await self._async_request(
+            self.SENSOR_STATUS_URL_TEMPLATE.format(self._url_base)
+        )
+        sensors = []
+        for sensor in data:
+            if sensor["attributes"]["deviceType"] in [1, 2]:
+                sensors.append(
+                    {
+                        "id": sensor["id"],
+                        "description": sensor["attributes"]["description"],
+                        "deviceType": sensor["attributes"]["deviceType"],
+                        "state": sensor["attributes"]["state"],
+                        "stateText": sensor["attributes"]["stateText"],
+                    }
+                )
+        return sensors
+
+    async def async_get_garage_doors_data(self):
+        """Fetches garage doors state data"""
+        data = await self._async_request(
+            self.GARAGE_DOOR_STATUS_URL_TEMPLATE.format(self._url_base)
+        )
+        garage_doors = []
+        for garage_door in data:
+            garage_doors.append(
+                {
+                    "id": garage_door["id"],
+                    "description": garage_door["attributes"]["description"],
+                    "state": garage_door["attributes"]["state"],
+                }
+            )
+        return garage_doors
+
+    async def async_get_thermostats_data(self):
+        """Fetches thermostat state data"""
+        data = await self._async_request(
+            self.THERMOSTATS_STATUS_URL_TEMPLATE.format(self._url_base)
         )
 
-    async def _async_get_ajax_key(self):
+        thermostats = []
+        for thermostat in data:
+            thermostats.append(
+                {
+                    "id": thermostat["id"],
+                    "description": thermostat["attributes"]["description"],
+                    "ambientTemp": thermostat["attributes"]["ambientTemp"],
+                    "humidityLevel": thermostat["attributes"]["humidityLevel"],
+                }
+            )
+        return thermostats
+
+    async def async_alarm_disarm(self):
+        """Send disarm alarm command."""
+        await self._send_alarm_command(self.ALARM_COMMAND_DISARM)
+
+    async def async_alarm_arm_stay(self):
+        """Send arm stay alarm command."""
+        await self._send_alarm_command(self.ALARM_COMMAND_ARM_STAY)
+
+    async def async_alarm_arm_away(self):
+        """Send arm away alarm command."""
+        await self._send_alarm_command(self.ALARM_COMMAND_ARM_AWAY)
+
+    async def async_close_garage_door(self, garage_door_id: str):
+        """Send close garage door command."""
+        await self._send_garage_door_command(
+            garage_door_id, self.GARAGE_DOOR_COMMAND_CLOSE
+        )
+
+    async def async_open_garage_door(self, garage_door_id: str):
+        """Send open garage door command."""
+        await self._send_garage_door_command(
+            garage_door_id, self.GARAGE_DOOR_COMMAND_OPEN
+        )
+
+    async def _send_alarm_command(self, command, params: Dict = None):
+        """Generic function for sending commands to Alarm.com
+        :param command: Command to send to alarm.com
+        """
+        json = {"statePollOnly": False}
+        if params:
+            for key, value in params.items():
+                json[key] = value
+        _LOGGER.debug(
+            "Sending alarm command %s to Alarm.com with payload %s", command, json
+        )
+        await self._async_request(
+            self.PARTITION_COMMAND_URL_TEMPLATE.format(
+                self._url_base,
+                self._partitionid,
+                self.ALARM_COMMAND_LIST[command]["command"],
+            ),
+            method="post",
+            json=json,
+        )
+
+    async def _send_garage_door_command(self, garage_door_id, command):
+        """"""
+        _LOGGER.debug(
+            "Sending garage door %s command %s to Alarm.com", garage_door_id, command
+        )
+        await self._async_request(
+            self.GARAGE_DOOR_COMMAND_URL_TEMPLATE.format(
+                self._url_base,
+                garage_door_id,
+                self.GARAGE_DOOR_COMMAND_LIST[command]["command"],
+            ),
+            method="post",
+            json={"statePollOnly": False},
+        )
+
+    async def _async_reset_login(self):
+        _LOGGER.debug("Resetting Alarm.com login cookie")
+        self._ajax_headers["ajaxrequestuniquekey"] = None
+
+    async def _async_require_login(self):
+        if not self._ajax_headers["ajaxrequestuniquekey"]:
+            await self.async_login()
+
+    async def _async_get_ajax_key(self) -> str:
         try:
             # load login page once and grab VIEWSTATE/cookies
             async with self._websession.get(
@@ -124,14 +255,14 @@ class Alarmdotcom:
                         "#{}".format(self.PREVIOUSPAGE_FIELD)
                     )[0].attrs.get("value"),
                 }
-                _LOGGER.debug(login_info)
+                _LOGGER.debug("login_info: %s", login_info)
                 _LOGGER.info("Attempting login to Alarm.com")
-        except (asyncio.TimeoutError, aiohttp.ClientError):
+        except (asyncio.TimeoutError, aiohttp.ClientError) as err:
             _LOGGER.error("Can not load login page from Alarm.com")
-            return False
-        except (AttributeError, IndexError):
+            raise AlarmdotcomClientError from err
+        except (AttributeError, IndexError) as err:
             _LOGGER.error("Unable to extract login info from Alarm.com")
-            raise
+            raise AlarmdotcomClientError from err
         try:
             # login and grab ajax key
             async with self._websession.post(
@@ -149,403 +280,103 @@ class Alarmdotcom:
                 },
                 cookies=self._twofactor_cookie,
             ) as resp:
-                self._ajax_headers["ajaxrequestuniquekey"] = resp.cookies["afg"].value
-        except (asyncio.TimeoutError, aiohttp.ClientError):
+                return resp.cookies["afg"].value
+        except (asyncio.TimeoutError, aiohttp.ClientError) as err:
             _LOGGER.error("Can not login to Alarm.com")
-            return False
-        except KeyError:
+            raise AlarmdotcomClientError from err
+        except KeyError as err:
             _LOGGER.error("Unable to extract ajax key from Alarm.com")
-            raise
-        return True
+            raise AlarmdotcomClientAuthError from err
 
-    async def _async_get_system_info(self):
-        try:
-            # grab system id
-            async with self._websession.get(
-                url=self.SYSTEMITEMS_URL, headers=self._ajax_headers
-            ) as resp:
-                json = await (resp.json())
-            self._systemid = json["data"][0]["id"]
-        except (asyncio.TimeoutError, aiohttp.ClientError):
-            _LOGGER.error("Can not load system data from Alarm.com")
-            return False
-        except (KeyError, IndexError):
-            _LOGGER.error("Unable to extract system id from Alarm.com")
-            raise
-        try:
-            # grab partition id
-            async with self._websession.get(
-                url=self.SYSTEM_URL_TEMPLATE.format(self._url_base, self._systemid),
-                headers=self._ajax_headers,
-            ) as resp:
-                json = await (resp.json())
-            self._partitionid = json["data"]["relationships"]["partitions"]["data"][0][
-                "id"
-            ]
-            thermostats = (
-                json["data"]["relationships"].get("thermostats", {}).get("data", [])
-            )
-            self._thermostat_detected = len(thermostats) > 0
+    async def _async_fetch_system_info(self):
+        data = await self._async_request(self.SYSTEMITEMS_URL)
+        self._systemid = data[0]["id"]
+        _LOGGER.debug("System id is %s", self._systemid)
 
-            # CHECK IF GARAGE DOORS EXIST ON SYSTEM
-            garage_doors = (
-                json["data"]["relationships"].get("garageDoors", {}).get("data", [])
-            )
-            self._garage_door_detected = len(garage_doors) > 0
-        except (asyncio.TimeoutError, aiohttp.ClientError):
-            _LOGGER.error("Can not load partition data from Alarm.com")
-            return False
-        except (KeyError, IndexError):
+        # grab partition id
+        data = await self._async_request(
+            self.SYSTEM_URL_TEMPLATE.format(self._url_base, self._systemid)
+        )
+        try:
+            self._partitionid = data["relationships"]["partitions"]["data"][0]["id"]
+            _LOGGER.debug("Partition id is %s", self._partitionid)
+        except (KeyError, IndexError) as err:
             _LOGGER.error("Unable to extract partition id from Alarm.com")
-            raise
+            raise AlarmdotcomClientError from err
         return True
 
-    async def async_login(self):
-        """Login to Alarm.com."""
-        _LOGGER.debug("Attempting to log in to Alarm.com")
-        if not await self._async_get_ajax_key():
-            return False
-        return await self._async_get_system_info()
-
-    async def async_update(self):
-        """Fetch the latest state."""
-        _LOGGER.debug("Calling update on Alarm.com")
-        if not self._ajax_headers["ajaxrequestuniquekey"]:
-            await self.async_login()
+    async def _async_request(
+        self, url, method: str = "get", json=None, retrying: bool = False
+    ):
         try:
-            # grab partition status
-            async with self._websession.get(
-                url=self.PARTITION_URL_TEMPLATE.format(
-                    self._url_base, self._partitionid
-                ),
-                headers=self._ajax_headers,
-            ) as resp:
-                json = await (resp.json())
-            self.sensor_status = json["data"]["attributes"]["needsClearIssuesPrompt"]
-            self.sensor_status = (
-                "System needs to be cleared" if self.sensor_status else "System OK"
-            )
-            self.sensors = []
-            self.garage_doors = []
-            self.state = json["data"]["attributes"]["state"]
-            self.state = self.STATEMAP[self.state]
+            await self._async_require_login()
+
+            if callable(url):
+                url = url()
+
             _LOGGER.debug(
-                "Got state %s, mapping to %s",
-                json["data"]["attributes"]["state"],
-                self.state,
+                "Performing request%s %s",
+                (
+                    " (with AJAX cookie)"
+                    if self._ajax_headers["ajaxrequestuniquekey"]
+                    else ""
+                ),
+                url,
             )
-        except (asyncio.TimeoutError, aiohttp.ClientError):
-            _LOGGER.error("Can not load state data from Alarm.com")
-            return False
-        except KeyError:
-            _LOGGER.error("Unable to extract state data from Alarm.com")
-            # We may have timed out. Re-login again
-            self.state = None
-            self.sensor_status = None
-            self.sensors = []
-            self.garage_doors = []
-            self._ajax_headers["ajaxrequestuniquekey"] = None
-            await self.async_update()
-        try:
-            async with self._websession.get(
-                url=self.SENSOR_STATUS_URL_TEMPLATE.format(self._url_base),
-                headers=self._ajax_headers,
+
+            if method.lower() == "get":
+                fn_method = self._websession.get
+            elif method.lower() == "post":
+                fn_method = self._websession.post
+
+            async with fn_method(
+                url=url, headers=self._ajax_headers, json=json
             ) as resp:
-                json = await (resp.json())
-            for sensor in json["data"]:
-                if sensor["attributes"]["hasState"]:
-                    self.sensors.append({
-                        "id": sensor["id"],
-                        "description": sensor["attributes"]["description"],
-                        "deviceType": sensor["attributes"]["deviceType"],
-                        "state": sensor["attributes"]["state"],
-                        "stateText": sensor["attributes"]["stateText"],
-                    })
-                    self.sensor_status += (
-                        ", "
-                        + sensor["attributes"]["description"]
-                        + " is "
-                        + sensor["attributes"]["stateText"]
+                _LOGGER.debug(
+                    "Request response received from Alarm.com with HTTP status %s",
+                    resp.status,
+                )
+                if resp.status == 403:
+                    # May have been logged out, try again
+                    if retrying:
+                        _LOGGER.error("Unable to authenticate with Alarm.com")
+                        raise AlarmdotcomClientAuthError
+                    _LOGGER.warning(
+                        "Request to Alarm.com failed, clearing login and retrying"
                     )
-        except (asyncio.TimeoutError, aiohttp.ClientError):
-            _LOGGER.error("Can not load sensor status from Alarm.com")
-            return False
-        except KeyError:
-            _LOGGER.error("Unable to extract sensor status from Alarm.com")
-            raise
-        if self._thermostat_detected:
-            try:
-                async with self._websession.get(
-                    url=self.THERMOSTAT_STATUS_URL_TEMPLATE.format(self._url_base),
-                    headers=self._ajax_headers,
-                ) as resp:
-                    json = await (resp.json())
-                for sensor in json["data"]:
-                    for attribute in self.THERMOSTAT_ATTRIBUTES:
-                        if attribute not in sensor["attributes"]:
-                            continue
-                        self.sensor_status += (
-                            ", "
-                            + sensor["attributes"]["description"]
-                            + "_"
-                            + attribute
-                            + " is "
-                            + str(sensor["attributes"][attribute])
-                        )
-            except (asyncio.TimeoutError, aiohttp.ClientError):
-                _LOGGER.error("Can not load thermostat status from Alarm.com")
-                return False
-            except KeyError:
-                _LOGGER.error("Unable to extract thermostat status from Alarm.com")
-                raise
-
-        # GET GARAGE DOOR STATUS
-        if self._garage_door_detected:
-            try:
-                async with self._websession.get(
-                    url=self.GARAGE_DOOR_STATUS_URL_TEMPLATE.format(self._url_base),
-                    headers=self._ajax_headers,
-                ) as resp:
-                    json = await (resp.json())
-                for sensor in json["data"]:
-                    self.garage_doors.append({
-                        "id": sensor["id"],
-                        "description": sensor["attributes"]["description"],
-                        "state": sensor["attributes"]["state"],
-                    })
-                    garage_state = sensor["attributes"]["state"]
-                    garage_state = self.GARAGE_DOOR_STATEMAP[garage_state]
-                    self.sensor_status += (
-                        ", "
-                        + sensor["attributes"]["description"]
-                        + " is "
-                        + garage_state
+                    await self._async_reset_login()
+                    return await self._async_request(
+                        url, method=method, json=json, retrying=True
                     )
-            except (asyncio.TimeoutError, aiohttp.ClientError):
-                _LOGGER.error("Can not load garage door status from Alarm.com")
-                return False
-            except KeyError:
-                _LOGGER.error("Unable to extract garage door status from Alarm.com")
-                raise
-        try:
-            async with self._websession.get(
-                url=self.TROUBLECONDITIONS_URL_TEMPLATE.format(self._url_base),
-                headers=self._ajax_headers,
-            ) as resp:
+                elif resp.status >= 400:
+                    _LOGGER.error(
+                        "Request to Alarm.com failed with HTTP status %s", resp.status
+                    )
+                    raise AlarmdotcomClientError(
+                        f"Request to Alarm.com failed with HTTP status {resp.status}"
+                    )
                 json = await (resp.json())
-            for troublecondition in json["data"]:
-                self.sensor_status += (
-                    ", " + troublecondition["attributes"]["description"]
-                )
-        except (asyncio.TimeoutError, aiohttp.ClientError):
-            _LOGGER.error("Can not load trouble conditions from Alarm.com")
-            return False
-        except KeyError:
-            _LOGGER.error("Unable to extract trouble conditions from Alarm.com")
-            raise
-        return True
-
-    async def _send(self, event, forcebypass, noentrydelay, silentarming):
-        """Generic function for sending commands to Alarm.com
-
-        :param event: Event command to send to alarm.com
-        """
-        _LOGGER.debug("Sending %s to Alarm.com", event)
-        if event == "Disarm":
-            json = {"statePollOnly": False}
-        else:
-            json = {
-                "statePollOnly": False,
-                **{
-                    key: value
-                    for key, value in {
-                        "forceBypass": forcebypass,
-                        "noEntryDelay": noentrydelay,
-                        "silentArming": silentarming,
-                    }.items()
-                    if value is True
-                },
-            }
-        async with self._websession.post(
-            url=self.PARTITION_URL_TEMPLATE.format(self._url_base, self._partitionid)
-            + "/"
-            + self.COMMAND_LIST[event]["command"],
-            json=json,
-            headers=self._ajax_headers,
-        ) as resp:
-            _LOGGER.debug("Response from Alarm.com %s", resp.status)
-            if resp.status == 200:
-                # Update alarm.com status after calling state change.
-                await self.async_update()
-            if resp.status == 403:
-                # May have been logged out, try again
-                _LOGGER.warning(
-                    "Error executing %s, logging in and trying again...", event
-                )
-                await self.async_login()
-                if event == "Disarm":
-                    await self.async_alarm_disarm()
-                elif event == "Arm+Stay":
-                    await self.async_alarm_arm_stay()
-                elif event == "Arm+Away":
-                    await self.async_alarm_arm_away()
-            elif resp.status >= 400:
-                _LOGGER.error("%s failed with HTTP code %s", event, resp.status)
-                _LOGGER.error(
-                    "Arming parameters: force_bypass = %s, no_entry_delay = %s, silent_arming = %s",
-                    forcebypass,
-                    noentrydelay,
-                    silentarming,
-                )
-        return True
-
-    async def async_alarm_disarm(self):
-        """Send disarm command."""
-        await self._send("Disarm", False, False, False)
-
-    async def async_alarm_arm_stay(self):
-        """Send arm stay command."""
-        forcebypass = self._forcebypass in ["stay", "true"]
-        noentrydelay = self._noentrydelay in ["stay", "true"]
-        silentarming = self._silentarming in ["stay", "true"]
-        await self._send("Arm+Stay", forcebypass, noentrydelay, silentarming)
-
-    async def async_alarm_arm_away(self):
-        """Send arm away command."""
-        forcebypass = self._forcebypass in ["away", "true"]
-        noentrydelay = self._noentrydelay in ["away", "true"]
-        silentarming = self._silentarming in ["away", "true"]
-        await self._send("Arm+Away", forcebypass, noentrydelay, silentarming)
-
-
-class AlarmdotcomADT(Alarmdotcom):
-    """
-    Access to control.adt.com portal.
-
-    This class logs in via the control.adt.com portal instead of the alarm.com portal.
-    """
-
-    URL_BASE_ADT = "https://control.adt.com/"  # this overrides the URL_BASE in the Alarmdotcom class
-    LOGIN_POST_URL_ADT = "https://control.adt.com/login.asp"  # this overrides the LOGIN_POST_URL in the Alarmdotcom class
-    IDENTITY_URL_TEMPLATE = "{}system-install/api/identity"
-    SKIP_2FA_URL_TEMPLATE = "{}system-install/api/engines/twoFactorAuthentication/twoFactorSettings/{}/skipTwoFactorSetup"
-    DOTNETLOGIN_URL_TEMPLATE = (
-        "{}system-install/api/installmanager/getCustomerDotNetLoginUrl"
-    )
-    WRAPUPJOURNEY_URL_TEMPLATE = "{}system-install/api/installmanager/wrapupJourney"
-
-    async def _async_get_ajax_key_adt(self):
-        try:
-            # login and grab ajax key
-            async with self._websession.post(
-                url=self.LOGIN_POST_URL_ADT,
-                data={
-                    "JavaScriptTest": 1,
-                    "cookieTest": 1,
-                    "login": self._username,
-                    "password": self._password,
-                    "submit_banner_form": "Login",
-                },
-            ) as resp:
-                self._ajax_headers["ajaxrequestuniquekey"] = resp.cookies["afg"].value
-        except (asyncio.TimeoutError, aiohttp.ClientError):
-            _LOGGER.error("Can not login to Alarm.com")
-            return False
-        except KeyError:
-            _LOGGER.error("Unable to extract ajax key from Alarm.com")
-            raise
-        return True
-
-    async def _async_get_system_info_adt(self):
-        try:
-            # grab system id
-            async with self._websession.get(
-                url=self.IDENTITY_URL_TEMPLATE.format(self._url_base),
-                headers=self._ajax_headers,
-            ) as resp:
-                json = await resp.json()
-            adt_id = json["value"]["id"]
-            self._systemid = json["value"]["customerId"]
-            await self._websession.post(
-                url=self.SKIP_2FA_URL_TEMPLATE.format(self._url_base, adt_id),
-                headers=self._ajax_headers,
+            return json["data"]
+        except (asyncio.TimeoutError, aiohttp.ClientError) as err:
+            _LOGGER.error("Request to Alarm.com failed due to communication error")
+            raise AlarmdotcomClientError from err
+        except (KeyError, IndexError) as err:
+            # May have been logged out, try again
+            if retrying:
+                _LOGGER.error("Unable to authenticate with Alarm.com")
+                raise AlarmdotcomClientError from err
+            _LOGGER.warning(
+                "Unable to parse response from Alarm.com, clearing login and retrying"
             )
-            async with self._websession.post(
-                url=self.DOTNETLOGIN_URL_TEMPLATE.format(self._url_base),
-                headers=self._ajax_headers,
-            ) as resp:
-                json = await resp.json()
-            dotnet_url = json["value"]["url"]
-            await self._websession.post(
-                url=self.WRAPUPJOURNEY_URL_TEMPLATE.format(self._url_base),
-                headers=self._ajax_headers,
+            await self._async_reset_login()
+            return await self._async_request(
+                url, method=method, json=json, retrying=True
             )
-            async with self._websession.get(url=dotnet_url) as resp:
-                self._ajax_headers["ajaxrequestuniquekey"] = resp.cookies["afg"].value
-            # grab partition id
-            async with self._websession.get(
-                url=self.SYSTEM_URL_TEMPLATE.format(self._url_base, self._systemid),
-                headers=self._ajax_headers,
-            ) as resp:
-                json = await (resp.json())
-            self._partitionid = json["data"]["relationships"]["partitions"]["data"][0][
-                "id"
-            ]
-            thermostats = (
-                json["data"]["relationships"].get("thermostats", {}).get("data", [])
-            )
-            self._thermostat_detected = len(thermostats) > 0
-            # check if garage doors exist on system
-            garage_doors = (
-                json["data"]["relationships"].get("garageDoors", {}).get("data", [])
-            )
-            self._garage_door_detected = len(garage_doors) > 0
-        except (asyncio.TimeoutError, aiohttp.ClientError):
-            _LOGGER.error("Network error encountered during log in")
-            return False
-        except (KeyError, IndexError):
-            _LOGGER.warning("ADT log in style unsuccessful")
-            raise
-        return True
-
-    async def async_login(self):
-        """Log in to ADT."""
-        _LOGGER.debug("Attempting to log in to ADT")
-        try:
-            self._url_base = self.URL_BASE_ADT
-            if not await self._async_get_ajax_key_adt():
-                raise KeyError
-            return await self._async_get_system_info_adt()
-        except (KeyError, IndexError):
-            _LOGGER.warning("Falling back to ADC log in style")
-            try:
-                self._url_base = self.URL_BASE
-                if not await self._async_get_ajax_key():
-                    return False
-                return await self._async_get_system_info()
-            except (KeyError, IndexError):
-                _LOGGER.error("Unable to log in")
-                return False
 
 
-class AlarmdotcomProtection1(AlarmdotcomADT):
-    """
-    Access to alarm.com portal for Protection 1.
+class AlarmdotcomClientError(Exception):
+    """Indicates a generic error has occurred during API communication"""
 
-    This class uses the alarm.com portal but uses some ADT style endpoints.
-    """
 
-    async def async_login(self):
-        """Log in to Protection 1."""
-        _LOGGER.debug("Attempting to log in to Protection 1")
-        await self._async_get_ajax_key()
-        try:
-            if not await self._async_get_system_info_adt():
-                return False
-        except (KeyError, IndexError):
-            _LOGGER.warning("Falling back to ADC log in style")
-            try:
-                return await self._async_get_system_info()
-            except (KeyError, IndexError):
-                _LOGGER.error("Unable to log in")
-                return False
+class AlarmdotcomClientAuthError(AlarmdotcomClientError):
+    """Indicates authentication has failed when attempting to connect to API"""

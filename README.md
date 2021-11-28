@@ -1,14 +1,14 @@
 Alarm.com Python Library
 ===============================
 
-version number: 0.1.11
-author: Justin Wong
+version number: 0.2.0
+author: Dominique Archambault
 
 Overview
 --------
 
 A simple library to interface with Alarm.com using AJAX.
-Forked from Daren Lord's pyalarmdotcom. Mainly built for use with Home-Assistant.
+Forked from Justin Wong's pyalarmdotcomajax. Mainly built for use with Home-Assistant.
 
 Installation / Usage
 --------------------
